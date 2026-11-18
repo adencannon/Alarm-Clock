@@ -1,0 +1,415 @@
+def play_alarm_sound():
+    """
+    Play a system beep. Works on Windows, macOS, and most Linux.
+    On some systems it may only print a bell character.
+    """
+    try:
+        # Windows
+        if sys.platform == "win32":
+            import winsound
+            for _ in range(6):
+                winsound.Beep(1000, 300)
+                time.sleep(0.15)
+        else:
+            # macOS / Linux
+            for _ in range(6):
+                print("\a", end="", flush=True)
+                time.sleep(0.2)
+    except Exception:
+        print("\a" * 5)
+
+
+def load_alarms():
+    """Load saved alarms from JSON file. Returns a list of dicts."""
+    if not os.path.exists(ALARM_FILE):
+        return []
+    try:
+        with open(ALARM_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_alarms(alarms):
+    """Save the list of alarms to JSON file."""
+    try:
+        with open(ALARM_FILE, "w", encoding="utf-8") as f:
+            json.dump(alarms, f, indent=2)
+    except Exception as e:
+        print(f"Could not save alarms: {e}")
+
+
+def format_time_12h(hour, minute):
+    """Return a nice 12-hour string like '07:30 AM'."""
+    period = "AM" if hour < 12 else "PM"
+    display_hour = hour % 12
+    if display_hour == 0:
+        display_hour = 12
+    return f"{display_hour:02d}:{minute:02d} {period}"
+
+
+# ---------------------------------------------------------------------------
+# Main Application Class
+# ---------------------------------------------------------------------------
+class AlarmClockApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Python Alarm Clock")
+        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        self.root.resizable(False, False)
+        self.root.configure(bg=BG_COLOR)
+
+        # Data
+        self.alarms = load_alarms()          # list of {"hour": int, "minute": int, "label": str, "enabled": bool}
+        self.use_24h = tk.BooleanVar(value=False)
+        self.ringing = False
+        self.current_alarm = None
+
+        # Build UI
+        self.create_widgets()
+        self.update_clock()
+        self.refresh_alarm_list()
+
+        # Start the alarm checker
+        self.check_alarms()
+
+    # -----------------------------------------------------------------------
+    # UI Construction
+    # -----------------------------------------------------------------------
+    def create_widgets(self):
+        # Title
+        title = tk.Label(
+            self.root,
+            text="⏰ Alarm Clock",
+            font=("Segoe UI", 26, "bold"),
+            bg=BG_COLOR,
+            fg=ACCENT
+        )
+        title.pack(pady=(20, 5))
+
+        # Current time display
+        self.time_label = tk.Label(
+            self.root,
+            text="00:00:00",
+            font=("Consolas", 48, "bold"),
+            bg=BG_COLOR,
+            fg=FG_COLOR
+        )
+        self.time_label.pack(pady=5)
+
+        self.date_label = tk.Label(
+            self.root,
+            text="",
+            font=("Segoe UI", 14),
+            bg=BG_COLOR,
+            fg=FG_COLOR
+        )
+        self.date_label.pack(pady=(0, 15))
+
+        # 12h / 24h toggle
+        toggle_frame = tk.Frame(self.root, bg=BG_COLOR)
+        toggle_frame.pack(pady=5)
+        tk.Checkbutton(
+            toggle_frame,
+            text="24-hour format",
+            variable=self.use_24h,
+            bg=BG_COLOR,
+            fg=FG_COLOR,
+            selectcolor=BUTTON_BG,
+            activebackground=BG_COLOR,
+            activeforeground=FG_COLOR,
+            font=("Segoe UI", 11),
+            command=self.refresh_alarm_list
+        ).pack()
+
+        # Add alarm section
+        add_frame = tk.LabelFrame(
+            self.root,
+            text=" Add New Alarm ",
+            font=("Segoe UI", 12, "bold"),
+            bg=BG_COLOR,
+            fg=ACCENT,
+            labelanchor="n"
+        )
+        add_frame.pack(pady=10, padx=30, fill="x")
+
+        # Time entry
+        time_frame = tk.Frame(add_frame, bg=BG_COLOR)
+        time_frame.pack(pady=10)
+
+        tk.Label(time_frame, text="Hour:", bg=BG_COLOR, fg=FG_COLOR, font=("Segoe UI", 11)).grid(row=0, column=0, padx=5)
+        self.hour_var = tk.StringVar(value="07")
+        self.hour_spin = tk.Spinbox(
+            time_frame, from_=0, to=23, width=5, textvariable=self.hour_var,
+            font=("Consolas", 14), bg=ENTRY_BG, fg=FG_COLOR, buttonbackground=BUTTON_BG,
+            justify="center"
+        )
+        self.hour_spin.grid(row=0, column=1, padx=5)
+
+        tk.Label(time_frame, text="Min:", bg=BG_COLOR, fg=FG_COLOR, font=("Segoe UI", 11)).grid(row=0, column=2, padx=5)
+        self.minute_var = tk.StringVar(value="00")
+        self.minute_spin = tk.Spinbox(
+            time_frame, from_=0, to=59, width=5, textvariable=self.minute_var,
+            font=("Consolas", 14), bg=ENTRY_BG, fg=FG_COLOR, buttonbackground=BUTTON_BG,
+            justify="center"
+        )
+        self.minute_spin.grid(row=0, column=3, padx=5)
+
+        # Label entry
+        label_frame = tk.Frame(add_frame, bg=BG_COLOR)
+        label_frame.pack(pady=5)
+        tk.Label(label_frame, text="Label:", bg=BG_COLOR, fg=FG_COLOR, font=("Segoe UI", 11)).pack(side="left", padx=5)
+        self.label_var = tk.StringVar(value="Wake up")
+        self.label_entry = tk.Entry(
+            label_frame, textvariable=self.label_var, width=25,
+            font=("Segoe UI", 12), bg=ENTRY_BG, fg=FG_COLOR, insertbackground=FG_COLOR
+        )
+        self.label_entry.pack(side="left", padx=5)
+
+        # Add button
+        add_btn = tk.Button(
+            add_frame,
+            text="➕ Add Alarm",
+            font=("Segoe UI", 12, "bold"),
+            bg=ACCENT,
+            fg=BG_COLOR,
+            activebackground="#74c7ec",
+            relief="flat",
+            padx=20,
+            pady=6,
+            command=self.add_alarm
+        )
+        add_btn.pack(pady=10)
+
+        # Alarm list
+        list_frame = tk.LabelFrame(
+            self.root,
+            text=" Your Alarms ",
+            font=("Segoe UI", 12, "bold"),
+            bg=BG_COLOR,
+            fg=ACCENT,
+            labelanchor="n"
+        )
+        list_frame.pack(pady=10, padx=30, fill="both", expand=True)
+
+        # Treeview for alarms
+        columns = ("time", "label", "status")
+        self.tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=6)
+        self.tree.heading("time", text="Time")
+        self.tree.heading("label", text="Label")
+        self.tree.heading("status", text="Status")
+        self.tree.column("time", width=120, anchor="center")
+        self.tree.column("label", width=180, anchor="w")
+        self.tree.column("status", width=80, anchor="center")
+
+        # Style the treeview
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Treeview",
+                        background=ENTRY_BG,
+                        foreground=FG_COLOR,
+                        fieldbackground=ENTRY_BG,
+                        rowheight=28,
+                        font=("Segoe UI", 11))
+        style.configure("Treeview.Heading",
+                        background=BUTTON_BG,
+                        foreground=ACCENT,
+                        font=("Segoe UI", 11, "bold"))
+        style.map("Treeview", background=[("selected", ACCENT)])
+
+        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Delete button
+        del_btn = tk.Button(
+            list_frame,
+            text="🗑️ Delete Selected",
+            font=("Segoe UI", 11),
+            bg=ALARM_COLOR,
+            fg=BG_COLOR,
+            activebackground="#eba0ac",
+            relief="flat",
+            padx=15,
+            pady=4,
+            command=self.delete_selected
+        )
+        del_btn.pack(pady=(0, 10))
+
+        # Snooze / Dismiss frame (hidden until alarm rings)
+        self.alarm_frame = tk.Frame(self.root, bg=BG_COLOR)
+        self.alarm_label = tk.Label(
+            self.alarm_frame,
+            text="",
+            font=("Segoe UI", 16, "bold"),
+            bg=BG_COLOR,
+            fg=ALARM_COLOR
+        )
+        self.alarm_label.pack(pady=5)
+
+        btn_frame = tk.Frame(self.alarm_frame, bg=BG_COLOR)
+        btn_frame.pack(pady=5)
+
+        self.snooze_btn = tk.Button(
+            btn_frame,
+            text=f"Snooze {SNOOZE_MINUTES} min",
+            font=("Segoe UI", 12, "bold"),
+            bg=SUCCESS,
+            fg=BG_COLOR,
+            relief="flat",
+            padx=15,
+            pady=6,
+            command=self.snooze
+        )
+        self.snooze_btn.pack(side="left", padx=10)
+
+        self.dismiss_btn = tk.Button(
+            btn_frame,
+            text="Dismiss",
+            font=("Segoe UI", 12, "bold"),
+            bg=ALARM_COLOR,
+            fg=BG_COLOR,
+            relief="flat",
+            padx=15,
+            pady=6,
+            command=self.dismiss
+        )
+        self.dismiss_btn.pack(side="left", padx=10)
+
+    # -----------------------------------------------------------------------
+    # Clock & Alarm Logic
+    # -----------------------------------------------------------------------
+    def update_clock(self):
+        """Update the big clock every second."""
+        now = datetime.now()
+        if self.use_24h.get():
+            time_str = now.strftime("%H:%M:%S")
+        else:
+            time_str = now.strftime("%I:%M:%S %p")
+        self.time_label.config(text=time_str)
+        self.date_label.config(text=now.strftime("%A, %B %d, %Y"))
+        self.root.after(1000, self.update_clock)
+
+    def check_alarms(self):
+        """Check every second if any alarm should ring."""
+        if not self.ringing:
+            now = datetime.now()
+            for alarm in self.alarms:
+                if not alarm.get("enabled", True):
+                    continue
+                if now.hour == alarm["hour"] and now.minute == alarm["minute"] and now.second < 2:
+                    self.trigger_alarm(alarm)
+                    break
+        self.root.after(CHECK_INTERVAL, self.check_alarms)
+
+    def trigger_alarm(self, alarm):
+        """Start ringing an alarm."""
+        self.ringing = True
+        self.current_alarm = alarm
+        label = alarm.get("label", "Alarm")
+        self.alarm_label.config(text=f"🔔 {label}")
+        self.alarm_frame.pack(pady=10)
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(2000, lambda: self.root.attributes("-topmost", False))
+
+        # Play sound in a background thread so the GUI stays responsive
+        threading.Thread(target=play_alarm_sound, daemon=True).start()
+
+        # Flash the window title
+        self.flash_title()
+
+    def flash_title(self):
+        """Visual flash effect while alarm is ringing."""
+        if not self.ringing:
+            self.root.title("Python Alarm Clock")
+            return
+        current = self.root.title()
+        new_title = "🔔 ALARM! 🔔" if "ALARM" not in current else "Python Alarm Clock"
+        self.root.title(new_title)
+        self.root.after(500, self.flash_title)
+
+    # -----------------------------------------------------------------------
+    # Alarm Management
+    # -----------------------------------------------------------------------
+    def add_alarm(self):
+        """Add a new alarm from the input fields."""
+        try:
+            hour = int(self.hour_var.get())
+            minute = int(self.minute_var.get())
+            label = self.label_var.get().strip() or "Alarm"
+
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+
+            # Avoid exact duplicates
+            for a in self.alarms:
+                if a["hour"] == hour and a["minute"] == minute and a["label"] == label:
+                    messagebox.showinfo("Duplicate", "This alarm already exists.")
+                    return
+
+            new_alarm = {
+                "hour": hour,
+                "minute": minute,
+                "label": label,
+                "enabled": True
+            }
+            self.alarms.append(new_alarm)
+            save_alarms(self.alarms)
+            self.refresh_alarm_list()
+            messagebox.showinfo("Success", f"Alarm set for {format_time_12h(hour, minute)}")
+
+        except ValueError:
+            messagebox.showerror("Invalid Time", "Please enter a valid hour (0-23) and minute (0-59).")
+
+    def delete_selected(self):
+        """Delete the alarm selected in the list."""
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("No Selection", "Please select an alarm to delete.")
+            return
+
+        index = self.tree.index(selected[0])
+        if 0 <= index < len(self.alarms):
+            del self.alarms[index]
+            save_alarms(self.alarms)
+            self.refresh_alarm_list()
+
+    def refresh_alarm_list(self):
+        """Redraw the alarm list."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Sort by time
+        sorted_alarms = sorted(self.alarms, key=lambda a: (a["hour"], a["minute"]))
+        self.alarms = sorted_alarms
+
+        for alarm in self.alarms:
+            if self.use_24h.get():
+                time_str = f"{alarm['hour']:02d}:{alarm['minute']:02d}"
+            else:
+                time_str = format_time_12h(alarm["hour"], alarm["minute"])
+            status = "ON" if alarm.get("enabled", True) else "OFF"
+            self.tree.insert("", "end", values=(time_str, alarm["label"], status))
+
+    def snooze(self):
+        """Snooze the current alarm for SNOOZE_MINUTES."""
+        if not self.current_alarm:
+            return
+        now = datetime.now()
+        snooze_time = now + timedelta(minutes=SNOOZE_MINUTES)
+        # Update the current alarm to the new time
+        self.current_alarm["hour"] = snooze_time.hour
+        self.current_alarm["minute"] = snooze_time.minute
+        save_alarms(self.alarms)
+        self.refresh_alarm_list()
+        self.dismiss(show_message=False)
+        messagebox.showinfo("Snoozed", f"Alarm snoozed for {SNOOZE_MINUTES} minutes.")
+
+    def dismiss(self, show_message=True):
+        """Stop the ringing alarm."""
+        self.ringing = False
+        self.current_alarm = None
+        self.alarm_frame.pack_forget()
+        self.root.title("Python Alarm Clock")
+        if show_message:
+            messagebox.showinfo("Dismissed", "Alarm dismissed.")
